@@ -356,7 +356,6 @@ def avatar_thumb_bytes(cover_path: str) -> bytes:
             raw = f.read()
         img = Image.open(io.BytesIO(raw)).convert("RGB")
     except Exception:
-        # Если в качестве аватарки прислали Telegram-гифку (MP4) или видео — берем первый кадр
         from moviepy.editor import VideoFileClip
         clip = VideoFileClip(cover_path)
         frame = clip.get_frame(0)
@@ -478,7 +477,7 @@ def ask_artist(chat_id: int, uid: int):
 
 def ask_cover(chat_id: int, uid: int):
     send_step(chat_id, uid,
-        f"{ce(E_COVER, '🖼️')} Пришли новую аватарку трека (картинку или гифку):",
+        f"{ce(E_COVER, '🖼️')} Пришли новую аватарку трека:",
         markup=skip_kb(uid))
     get_session(chat_id, uid)["step"] = "WAIT_COVER"
 
@@ -714,7 +713,7 @@ def _handle_audio_file(chat_id: int, uid: int, u: dict, file_id: str, mime: str,
     if ext in VIDEO_EXTS or mime.startswith("video/") or "gif" in mime:
         is_video = True
 
-    wm = bot.send_message(chat_id, f"{ce(E_SEND, '📤')} {'вырезаю звук из видео/гифки...' if is_video else 'скачиваю трек...'}", parse_mode="HTML")
+    wm = bot.send_message(chat_id, f"{ce(E_SEND, '📤')} {'вырезаю звук из видео...' if is_video else 'скачиваю трек...'}", parse_mode="HTML")
     try:
         path = download_file(file_id, suffix=ext)
         if is_video:
@@ -831,7 +830,7 @@ def handle_text(msg: types.Message):
         ask_cover(chat_id, uid)
     elif step == "WAIT_COVER":
         if not is_group:
-            bot.send_message(chat_id, f"{ce(E_COVER, '🖼️')} Отправьте картинку или гифку прямо сюда файлом!", parse_mode="HTML")
+            bot.send_message(chat_id, f"{ce(E_COVER, '🖼️')} Пришли новую аватарку трека!", parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda c: c.data in ("admin_panel", "admin_stats", "admin_users_list", "admin_import", "admin_broadcast", "admin_close"))
 def handle_admin_callbacks(call: types.CallbackQuery):
