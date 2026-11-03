@@ -14,11 +14,12 @@ from mutagen.oggopus import OggOpus
 from mutagen.asf import ASF
 from mutagen.wave import WAVE
 
-TOKEN       = "8831747632:AAHQBP07TKxs9jc9Nc8opT5cQqTcurfgeCA"
-CHANNEL_ID  = -1004218500440
-CHANNEL_URL = "https://t.me/vk_only_News"
-ADMIN_IDS   = {6668784806}
-DB_FILE     = "users_db.json"
+TOKEN        = "8831747632:AAHQBP07TKxs9jc9Nc8opT5cQqTcurfgeCA"
+CHANNEL_ID   = -1004218500440
+CHANNEL_URL  = "https://t.me/vk_only_News"
+BOT_USERNAME = "vksoundseditorbot"
+ADMIN_IDS    = {6668784806}
+DB_FILE      = "users_db.json"
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
@@ -72,6 +73,17 @@ def get_ffmpeg_cmd() -> str:
 def extract_audio_from_video(video_path: str) -> str:
     out_mp3 = video_path + "_extracted.mp3"
     ffmpeg_bin = get_ffmpeg_cmd()
+    
+    # Проверяем, есть ли вообще аудиопоток в видео
+    try:
+        probe_cmd = [ffmpeg_bin, "-i", video_path]
+        res_probe = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if "Audio:" not in res_probe.stderr:
+            raise RuntimeError("В этом видеофайле отсутствует аудиодорожка!")
+    except Exception as e:
+        if "отсутствует" in str(e):
+            raise e
+
     try:
         cmd = [
             ffmpeg_bin, "-y", "-i", video_path,
@@ -97,7 +109,17 @@ def extract_audio_from_video(video_path: str) -> str:
     except Exception as e:
         log.warning(f"pydub extraction failed: {e}")
 
-    raise RuntimeError("Не удалось извлечь звук из видео (проверьте наличие аудиодорожки или установленного FFmpeg).")
+    raise RuntimeError("Не удалось извлечь звук (возможно, файл поврежден или не содержит аудио).")
+
+def fetch_telegram_mau() -> int:
+    try:
+        r = requests.get(f"https://t.me/{BOT_USERNAME}", timeout=5)
+        m = re.search(r"([\d\s]+)\s+monthly users", r.text, re.IGNORECASE)
+        if m:
+            return int(re.sub(r"\D", "", m.group(1)))
+    except Exception:
+        pass
+    return 84
 
 def load_users_db() -> dict[str, dict]:
     if os.path.exists(DB_FILE):
@@ -153,40 +175,26 @@ def track_user(user: types.User | int, inc_track: bool = False):
             users_db[uid_str]["tracks"] = users_db[uid_str].get("tracks", 0) + 1
     save_users_db()
 
+@bot.chat_member_handler()
+def handle_chat_member_update(update: types.ChatMemberUpdated):
+    if update.from_user and not update.from_user.is_bot:
+        track_user(update.from_user)
+    if update.new_chat_member and update.new_chat_member.user and not update.new_chat_member.user.is_bot:
+        track_user(update.new_chat_member.user)
+
 def get_stats_text() -> str:
-    now = time.time()
-    day_ago = now - 86400
-    week_ago = now - 7 * 86400
-    month_ago = now - 30 * 86400
-
-    total = len(users_db)
+    tg_mau = fetch_telegram_mau()
+    total_db = len(users_db)
+    total_all = max(tg_mau, total_db)
     active_all = sum(1 for v in users_db.values() if not v.get("blocked", False))
-    blocked_all = total - active_all
-
-    new_day = sum(1 for v in users_db.values() if v.get("joined", 0) >= day_ago)
-    new_week = sum(1 for v in users_db.values() if v.get("joined", 0) >= week_ago)
-    new_month = sum(1 for v in users_db.values() if v.get("joined", 0) >= month_ago)
-
-    act_day = sum(1 for v in users_db.values() if v.get("last_active", 0) >= day_ago)
-    act_week = sum(1 for v in users_db.values() if v.get("last_active", 0) >= week_ago)
-    act_month = sum(1 for v in users_db.values() if v.get("last_active", 0) >= month_ago)
-
     total_tracks = sum(v.get("tracks", 0) for v in users_db.values())
 
+    # Сокращенный и компактный вид статистики
     return (
-        f"📊 <b>Полная статистика бота за всё время</b>\n\n"
-        f"👥 <b>Всего пользователей за всё время:</b> <code>{total}</code>\n"
-        f"├ ✅ Живых (доступны для рассылки): <code>{active_all}</code>\n"
-        f"└ 🚫 Заблокировали бота: <code>{blocked_all}</code>\n\n"
-        f"📈 <b>Новые пользователи:</b>\n"
-        f"├ За 24 часа: <code>+{new_day}</code>\n"
-        f"├ За 7 дней: <code>+{new_week}</code>\n"
-        f"└ За 30 дней: <code>+{new_month}</code>\n\n"
-        f"⚡️ <b>Активность в боте:</b>\n"
-        f"├ За 24 часа: <code>{act_day}</code>\n"
-        f"├ За 7 дней: <code>{act_week}</code>\n"
-        f"└ За 30 дней: <code>{act_month}</code>\n\n"
-        f"🎵 <b>Обработано треков за всё время:</b> <code>{total_tracks}</code>"
+        f"📊 <b>Статистика бота</b>\n\n"
+        f"👥 Всего (за месяц): <b>{total_all}</b>\n"
+        f"💾 В базе (для рассылки): <b>{total_db}</b> (активных: {active_all})\n"
+        f"🎵 Обработано треков: <b>{total_tracks}</b>"
     )
 
 def is_admin(uid: int) -> bool:
@@ -202,16 +210,17 @@ def start_kb(uid: int, chat_type: str = "private") -> types.InlineKeyboardMarkup
 def admin_kb() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup(row_width=1)
     kb.add(
-        types.InlineKeyboardButton("🔄 Обновить статистику", callback_data="admin_stats"),
-        types.InlineKeyboardButton("📋 Список всех пользователей", callback_data="admin_users_list"),
-        types.InlineKeyboardButton("📢 Рассылка всем пользователям", callback_data="admin_broadcast"),
-        types.InlineKeyboardButton("🔙 Закрыть панель", callback_data="admin_close")
+        types.InlineKeyboardButton("🔄 Обновить", callback_data="admin_stats"),
+        types.InlineKeyboardButton("📋 Список пользователей", callback_data="admin_users_list"),
+        types.InlineKeyboardButton("📥 Импорт ID", callback_data="admin_import"),
+        types.InlineKeyboardButton("📢 Рассылка", callback_data="admin_broadcast"),
+        types.InlineKeyboardButton("🔙 Закрыть", callback_data="admin_close")
     )
     return kb
 
-def cancel_broadcast_kb() -> types.InlineKeyboardMarkup:
+def cancel_action_kb() -> types.InlineKeyboardMarkup:
     kb = types.InlineKeyboardMarkup()
-    kb.add(types.InlineKeyboardButton("❌ Отменить рассылку", callback_data="admin_panel"))
+    kb.add(types.InlineKeyboardButton("❌ Отмена", callback_data="admin_panel"))
     return kb
 
 def is_subscribed(uid: int) -> bool:
@@ -546,6 +555,45 @@ def cmd_reset(msg: types.Message):
     bot.send_message(chat_id, "🔄 Сброшено. Отправь новый трек или видео.")
 
 @bot.message_handler(
+    func=lambda m: get_session(m.chat.id, m.from_user.id).get("step") == "WAIT_IMPORT" and is_admin(m.from_user.id),
+    content_types=["text", "document", "photo", "video", "audio", "voice"]
+)
+def handle_import_users(msg: types.Message):
+    uid = msg.from_user.id
+    chat_id = msg.chat.id
+    added = 0
+
+    if msg.forward_from and not msg.forward_from.is_bot:
+        f_uid = str(msg.forward_from.id)
+        if f_uid not in users_db:
+            added += 1
+        track_user(msg.forward_from)
+
+    raw_text = msg.text or msg.caption or ""
+    if msg.document:
+        try:
+            p = download_file(msg.document.file_id, suffix=".txt")
+            with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                raw_text += "\n" + f.read()
+            os.remove(p)
+        except Exception:
+            pass
+
+    found_ids = re.findall(r"\b\d{6,12}\b", raw_text)
+    for f_id in found_ids:
+        if f_id not in users_db:
+            track_user(int(f_id))
+            added += 1
+
+    reset_session(chat_id, uid)
+    bot.send_message(
+        chat_id,
+        f"✅ <b>Импорт завершён!</b> Добавлено: <code>{added}</code>",
+        reply_markup=admin_kb(),
+        parse_mode="HTML"
+    )
+
+@bot.message_handler(
     func=lambda m: get_session(m.chat.id, m.from_user.id).get("step") == "WAIT_BROADCAST" and is_admin(m.from_user.id),
     content_types=["text", "photo", "video", "audio", "document", "voice", "video_note", "animation", "sticker"]
 )
@@ -563,12 +611,7 @@ def handle_broadcast_message(msg: types.Message):
     sent = 0
     failed = 0
 
-    status_msg = bot.send_message(
-        chat_id,
-        f"⏳ <b>Рассылка запущена...</b>\n"
-        f"Прогресс: <code>0 / {total}</code>",
-        parse_mode="HTML"
-    )
+    status_msg = bot.send_message(chat_id, f"⏳ Рассылка: <code>0 / {total}</code>", parse_mode="HTML")
 
     for idx, target_uid_str in enumerate(all_uids, 1):
         try:
@@ -587,10 +630,7 @@ def handle_broadcast_message(msg: types.Message):
         if idx % 20 == 0 or idx == total:
             try:
                 bot.edit_message_text(
-                    f"⏳ <b>Идёт рассылка по всей базе...</b>\n\n"
-                    f"🔄 Прогресс: <code>{idx} / {total}</code>\n"
-                    f"✅ Доставлено: <code>{sent}</code>\n"
-                    f"🚫 Ошибок / блок: <code>{failed}</code>",
+                    f"⏳ Рассылка: <code>{idx} / {total}</code> (✅ {sent}, 🚫 {failed})",
                     chat_id,
                     status_msg.message_id,
                     parse_mode="HTML"
@@ -603,10 +643,7 @@ def handle_broadcast_message(msg: types.Message):
 
     try:
         bot.edit_message_text(
-            f"✅ <b>Рассылка по всем пользователям завершена!</b>\n\n"
-            f"👥 Всего пользователей в базе: <code>{total}</code>\n"
-            f"📤 Успешно получили: <code>{sent}</code>\n"
-            f"🚫 Заблокировали / недоступны: <code>{failed}</code>",
+            f"✅ <b>Рассылка завершена!</b>\nДоставлено: <b>{sent}</b> | Ошибок: <b>{failed}</b>",
             chat_id,
             status_msg.message_id,
             reply_markup=admin_kb(),
@@ -635,10 +672,7 @@ def _route_document(msg: types.Message):
             if not ensure_sub(msg.from_user, msg.chat):
                 return
             supported = ", ".join(sorted(FMT_NAME.values()))
-            bot.send_message(chat_id,
-                f"⚠️ Формат не поддерживается.\n"
-                f"Поддерживаю: <b>{supported}</b>",
-                parse_mode="HTML")
+            bot.send_message(chat_id, f"⚠️ Формат не поддерживается. Поддерживаю: <b>{supported}</b>", parse_mode="HTML")
         return
 
     if not ensure_sub(msg.from_user, msg.chat):
@@ -651,22 +685,20 @@ def _save_cover_from_file_id(chat_id: int, uid: int, u: dict, file_id: str, chat
         path = download_file(file_id, suffix=".jpg")
     except Exception as e:
         log.exception(e)
-        bot.send_message(chat_id, "❌ Не удалось скачать аватарку трека.")
+        bot.send_message(chat_id, "❌ Не удалось скачать аватарку.")
         return
     u["cover_path"] = path
     do_save(chat_id, uid, chat_type)
 
 def _handle_audio_file(chat_id: int, uid: int, u: dict, file_id: str, mime: str, fname: str, is_video: bool = False):
     if u["step"] == "WAIT_COVER":
-        bot.send_message(chat_id, "⚠️ Жду аватарку трека, не аудио/видео. Отправь картинку или нажми «пропустить».")
+        bot.send_message(chat_id, "⚠️ Жду аватарку трека, не аудио/видео.")
         return
     ext = detect_audio_ext(mime, fname) or (".mp4" if is_video else ".mp3")
     if ext in VIDEO_EXTS or mime.startswith("video/"):
         is_video = True
 
-    wm = bot.send_message(chat_id,
-        f"{ce(E_SEND, '📤')} {'вырезаю звук из видео...' if is_video else 'скачиваю трек...'}",
-        parse_mode="HTML")
+    wm = bot.send_message(chat_id, f"{ce(E_SEND, '📤')} {'вырезаю звук из видео...' if is_video else 'скачиваю трек...'}", parse_mode="HTML")
     try:
         path = download_file(file_id, suffix=ext)
         if is_video:
@@ -674,7 +706,7 @@ def _handle_audio_file(chat_id: int, uid: int, u: dict, file_id: str, mime: str,
             ext = ".mp3"
     except Exception as e:
         log.exception(e)
-        bot.edit_message_text(f"❌ Ошибка обработки файла: {e}", chat_id, wm.message_id)
+        bot.edit_message_text(f"❌ {e}", chat_id, wm.message_id)
         return
 
     try: bot.delete_message(chat_id, wm.message_id)
@@ -692,11 +724,7 @@ def handle_audio(msg: types.Message):
     if not ensure_sub(msg.from_user, msg.chat):
         return
     u = get_session(chat_id, uid)
-    _handle_audio_file(chat_id, uid, u,
-        msg.audio.file_id,
-        msg.audio.mime_type or "",
-        msg.audio.file_name or "",
-        is_video=False)
+    _handle_audio_file(chat_id, uid, u, msg.audio.file_id, msg.audio.mime_type or "", msg.audio.file_name or "", is_video=False)
 
 @bot.message_handler(content_types=["voice"])
 def handle_voice(msg: types.Message):
@@ -705,11 +733,7 @@ def handle_voice(msg: types.Message):
     if not ensure_sub(msg.from_user, msg.chat):
         return
     u = get_session(chat_id, uid)
-    _handle_audio_file(chat_id, uid, u,
-        msg.voice.file_id,
-        msg.voice.mime_type or "audio/ogg",
-        "voice.ogg",
-        is_video=True)
+    _handle_audio_file(chat_id, uid, u, msg.voice.file_id, msg.voice.mime_type or "audio/ogg", "voice.ogg", is_video=True)
 
 @bot.message_handler(content_types=["video"])
 def handle_video(msg: types.Message):
@@ -718,11 +742,7 @@ def handle_video(msg: types.Message):
     if not ensure_sub(msg.from_user, msg.chat):
         return
     u = get_session(chat_id, uid)
-    _handle_audio_file(chat_id, uid, u,
-        msg.video.file_id,
-        msg.video.mime_type or "video/mp4",
-        msg.video.file_name or "video.mp4",
-        is_video=True)
+    _handle_audio_file(chat_id, uid, u, msg.video.file_id, msg.video.mime_type or "video/mp4", msg.video.file_name or "video.mp4", is_video=True)
 
 @bot.message_handler(content_types=["video_note"])
 def handle_video_note(msg: types.Message):
@@ -731,11 +751,7 @@ def handle_video_note(msg: types.Message):
     if not ensure_sub(msg.from_user, msg.chat):
         return
     u = get_session(chat_id, uid)
-    _handle_audio_file(chat_id, uid, u,
-        msg.video_note.file_id,
-        "video/mp4",
-        "video_note.mp4",
-        is_video=True)
+    _handle_audio_file(chat_id, uid, u, msg.video_note.file_id, "video/mp4", "video_note.mp4", is_video=True)
 
 @bot.message_handler(content_types=["document"])
 def handle_document(msg: types.Message):
@@ -751,7 +767,7 @@ def handle_photo(msg: types.Message):
         if not is_group:
             if not ensure_sub(msg.from_user, msg.chat):
                 return
-            bot.send_message(chat_id, "⚠️ Сначала отправь аудио-файл или видео.")
+            bot.send_message(chat_id, "⚠️ Сначала отправь аудио или видео.")
         return
     if not ensure_sub(msg.from_user, msg.chat):
         return
@@ -787,13 +803,9 @@ def handle_text(msg: types.Message):
         ask_cover(chat_id, uid)
     elif step == "WAIT_COVER":
         if not is_group:
-            bot.send_message(chat_id, f"{ce(E_COVER, '🖼️')} Жду <b>фото</b> для аватарки трека, не текст!",
-                             parse_mode="HTML")
-    else:
-        if not is_group:
-            bot.send_message(chat_id, "🎵 Сначала отправь аудио-файл или видео!")
+            bot.send_message(chat_id, f"{ce(E_COVER, '🖼️')} Жду фото для аватарки!", parse_mode="HTML")
 
-@bot.callback_query_handler(func=lambda c: c.data in ("admin_panel", "admin_stats", "admin_users_list", "admin_broadcast", "admin_close"))
+@bot.callback_query_handler(func=lambda c: c.data in ("admin_panel", "admin_stats", "admin_users_list", "admin_import", "admin_broadcast", "admin_close"))
 def handle_admin_callbacks(call: types.CallbackQuery):
     uid = call.from_user.id
     chat_id = call.message.chat.id
@@ -804,7 +816,7 @@ def handle_admin_callbacks(call: types.CallbackQuery):
 
     if call.data in ("admin_panel", "admin_stats"):
         get_session(chat_id, uid)["step"] = "WAIT_AUDIO"
-        bot.answer_callback_query(call.id, "Статистика обновлена" if call.data == "admin_stats" else None)
+        bot.answer_callback_query(call.id, "Обновлено" if call.data == "admin_stats" else None)
         text = get_stats_text()
         try:
             bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=admin_kb(), parse_mode="HTML")
@@ -813,53 +825,36 @@ def handle_admin_callbacks(call: types.CallbackQuery):
 
     elif call.data == "admin_users_list":
         bot.answer_callback_query(call.id)
-        lines = ["ID | Имя | Юзернейм | Первый вход | Посл. активность | Треков | Статус"]
         sorted_users = sorted(users_db.items(), key=lambda x: x[1].get("joined", 0), reverse=True)
-        for u_id, info in sorted_users:
-            j_dt = datetime.fromtimestamp(info.get("joined", 0)).strftime("%d.%m.%Y %H:%M")
-            a_dt = datetime.fromtimestamp(info.get("last_active", 0)).strftime("%d.%m.%Y %H:%M")
-            uname = f"@{info['username']}" if info.get("username") else "-"
-            name = info.get("name") or "-"
-            tr = info.get("tracks", 0)
-            st = "Заблокировал" if info.get("blocked") else "Активен"
-            lines.append(f"{u_id} | {name} | {uname} | {j_dt} | {a_dt} | {tr} | {st}")
+        short_lines = [f"📋 <b>Пользователи ({len(users_db)}):</b>\n"]
+        for idx, (u_id, info) in enumerate(sorted_users[:25], 1):
+            uname = f"@{info['username']}" if info.get("username") else info.get("name") or u_id
+            st = "🚫" if info.get("blocked") else "✅"
+            short_lines.append(f"{idx}. {st} <code>{u_id}</code> ({uname}) | 🎵 {info.get('tracks', 0)}")
+        kb_back = types.InlineKeyboardMarkup()
+        kb_back.add(types.InlineKeyboardButton("🔙 Назад", callback_data="admin_panel"))
+        try:
+            bot.edit_message_text("\n".join(short_lines), chat_id, call.message.message_id, reply_markup=kb_back, parse_mode="HTML")
+        except Exception:
+            bot.send_message(chat_id, "\n".join(short_lines), reply_markup=kb_back, parse_mode="HTML")
 
-        content = "\n".join(lines).encode("utf-8")
-        if len(users_db) <= 25:
-            short_lines = [f"📋 <b>Все пользователи ({len(users_db)}):</b>\n"]
-            for idx, (u_id, info) in enumerate(sorted_users, 1):
-                uname = f"@{info['username']}" if info.get("username") else info.get("name") or u_id
-                st = "🚫" if info.get("blocked") else "✅"
-                j_dt = datetime.fromtimestamp(info.get("joined", 0)).strftime("%d.%m.%y")
-                short_lines.append(f"{idx}. {st} <code>{u_id}</code> ({uname}) — с {j_dt} | 🎵 {info.get('tracks', 0)}")
-            kb_back = types.InlineKeyboardMarkup()
-            kb_back.add(types.InlineKeyboardButton("🔙 Назад в админ-панель", callback_data="admin_panel"))
-            try:
-                bot.edit_message_text("\n".join(short_lines), chat_id, call.message.message_id, reply_markup=kb_back, parse_mode="HTML")
-            except Exception:
-                bot.send_message(chat_id, "\n".join(short_lines), reply_markup=kb_back, parse_mode="HTML")
-        else:
-            bio = io.BytesIO(content)
-            bio.name = "all_users.txt"
-            bot.send_document(
-                chat_id,
-                bio,
-                caption=f"📋 Полная база всех пользователей за всё время: <b>{len(users_db)} чел.</b>",
-                parse_mode="HTML"
-            )
+    elif call.data == "admin_import":
+        bot.answer_callback_query(call.id)
+        get_session(chat_id, uid)["step"] = "WAIT_IMPORT"
+        text = "📥 Отправьте файл .txt с ID или перешлите сообщение пользователя для импорта в базу."
+        try:
+            bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=cancel_action_kb(), parse_mode="HTML")
+        except Exception:
+            bot.send_message(chat_id, text, reply_markup=cancel_action_kb(), parse_mode="HTML")
 
     elif call.data == "admin_broadcast":
         bot.answer_callback_query(call.id)
         get_session(chat_id, uid)["step"] = "WAIT_BROADCAST"
-        text = (
-            f"📢 <b>Рассылка по всей базе ({len(users_db)} чел.)</b>\n\n"
-            f"Отправьте любое сообщение (текст, фото, видео, аудио, голосовое, кружок или пост с кнопками), "
-            f"и оно будет отправлено каждому пользователю, который когда-либо запускал бота."
-        )
+        text = f"📢 Отправьте пост для рассылки по базе ({len(users_db)} чел.):"
         try:
-            bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=cancel_broadcast_kb(), parse_mode="HTML")
+            bot.edit_message_text(text, chat_id, call.message.message_id, reply_markup=cancel_action_kb(), parse_mode="HTML")
         except Exception:
-            bot.send_message(chat_id, text, reply_markup=cancel_broadcast_kb(), parse_mode="HTML")
+            bot.send_message(chat_id, text, reply_markup=cancel_action_kb(), parse_mode="HTML")
 
     elif call.data == "admin_close":
         get_session(chat_id, uid)["step"] = "WAIT_AUDIO"
@@ -884,24 +879,16 @@ def handle_check_sub(call: types.CallbackQuery):
 
     tmp_msg = bot.send_message(chat_id, ce(E_SUB_BTN, "⏳"), parse_mode="HTML")
     time.sleep(0.8)
-    try:
-        bot.delete_message(chat_id, tmp_msg.message_id)
-    except Exception:
-        pass
+    try: bot.delete_message(chat_id, tmp_msg.message_id)
+    except Exception: pass
 
     if call.message.chat.type in ("group", "supergroup") or is_subscribed(uid):
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except Exception:
-            pass
-        bot.send_message(chat_id,
-            f"{ce(E_MUSIC, '🎵')} Пришли трек, чтобы изменить название, исполнителя или аватарку трека.",
-            reply_markup=start_kb(uid, call.message.chat.type), parse_mode="HTML")
+        try: bot.delete_message(chat_id, call.message.message_id)
+        except Exception: pass
+        bot.send_message(chat_id, f"{ce(E_MUSIC, '🎵')} Пришли трек, чтобы изменить название, исполнителя или аватарку трека.", reply_markup=start_kb(uid, call.message.chat.type), parse_mode="HTML")
     else:
-        try:
-            bot.delete_message(chat_id, call.message.message_id)
-        except Exception:
-            pass
+        try: bot.delete_message(chat_id, call.message.message_id)
+        except Exception: pass
         send_sub_prompt(chat_id)
 
 @bot.callback_query_handler(func=lambda c: c.data.startswith("skip"))
@@ -911,7 +898,7 @@ def handle_skip(call: types.CallbackQuery):
     if ":" in call.data:
         owner_id = int(call.data.split(":")[1])
         if uid != owner_id:
-            bot.answer_callback_query(call.id, "⚠️ Это кнопка для другого пользователя!", show_alert=True)
+            bot.answer_callback_query(call.id, "⚠️ Кнопка не для вас!", show_alert=True)
             return
 
     if not ensure_sub(call.from_user, call.message.chat):
@@ -929,4 +916,8 @@ def handle_skip(call: types.CallbackQuery):
 
 if __name__ == "__main__":
     log.info("🎵 Bot started")
-    bot.infinity_polling(timeout=60, long_polling_timeout=30)
+    bot.infinity_polling(
+        timeout=60,
+        long_polling_timeout=30,
+        allowed_updates=["message", "callback_query", "chat_member", "my_chat_member"]
+    )
