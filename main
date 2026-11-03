@@ -713,7 +713,6 @@ def _handle_audio_file(chat_id: int, uid: int, u: dict, file_id: str, mime: str,
     if ext in VIDEO_EXTS or mime.startswith("video/") or "gif" in mime:
         is_video = True
 
-    wm = bot.send_message(chat_id, f"{ce(E_SEND, '📤')} {'вырезаю звук из видео...' if is_video else 'скачиваю трек...'}", parse_mode="HTML")
     try:
         path = download_file(file_id, suffix=ext)
         if is_video:
@@ -721,11 +720,9 @@ def _handle_audio_file(chat_id: int, uid: int, u: dict, file_id: str, mime: str,
             ext = ".mp3"
     except Exception as e:
         log.exception(e)
-        bot.edit_message_text(f"❌ {e}", chat_id, wm.message_id)
+        bot.send_message(chat_id, f"❌ {e}")
         return
 
-    try: bot.delete_message(chat_id, wm.message_id)
-    except Exception: pass
     reset_session(chat_id, uid)
     u = get_session(chat_id, uid)
     u["audio_path"] = path
