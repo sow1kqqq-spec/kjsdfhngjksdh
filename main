@@ -350,18 +350,19 @@ def download_file(file_id: str, suffix: str = ".mp3") -> str:
     tmp.flush(); tmp.close()
     return tmp.name
 
-def download_from_url(url: str, suffix: str = ".jpg") -> str:
-    r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
-    r.raise_for_status()
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(r.content)
-    tmp.flush(); tmp.close()
-    return tmp.name
-
 def avatar_thumb_bytes(cover_path: str) -> bytes:
-    with open(cover_path, "rb") as f:
-        raw = f.read()
-    img = Image.open(io.BytesIO(raw)).convert("RGB")
+    try:
+        with open(cover_path, "rb") as f:
+            raw = f.read()
+        img = Image.open(io.BytesIO(raw)).convert("RGB")
+    except Exception:
+        # Если в качестве аватарки прислали Telegram-гифку (MP4) или видео — берем первый кадр
+        from moviepy.editor import VideoFileClip
+        clip = VideoFileClip(cover_path)
+        frame = clip.get_frame(0)
+        clip.close()
+        img = Image.fromarray(frame).convert("RGB")
+
     img = ImageOps.fit(img, (320, 320), Image.Resampling.LANCZOS)
     for quality in (90, 80, 70, 60):
         buf = io.BytesIO()
@@ -477,7 +478,7 @@ def ask_artist(chat_id: int, uid: int):
 
 def ask_cover(chat_id: int, uid: int):
     send_step(chat_id, uid,
-        f"{ce(E_COVER, '🖼️')} Пришли новую аватарку трека (можно ссылку или гифку/картинку):",
+        f"{ce(E_COVER, '🖼️')} Пришли новую аватарку трека (картинку или гифку):",
         markup=skip_kb(uid))
     get_session(chat_id, uid)["step"] = "WAIT_COVER"
 
@@ -811,42 +812,6 @@ def handle_text(msg: types.Message):
     u = get_session(chat_id, uid)
     step = u.get("step")
 
-    # Проверка на то, прислал ли пользователь прямую ссылку (например, на картинку, гифку или медиафайл)
-    if text.startswith("http://") or text.startswith("https://"):
-        if not ensure_sub(msg.from_user, msg.chat):
-            return
-        if step == "WAIT_COVER":
-            try:
-                bot.delete_message(chat_id, msg.message_id)
-                path = download_from_url(text, suffix=".jpg")
-                u["cover_path"] = path
-                do_save(chat_id, uid, msg.chat.type)
-                return
-            except Exception as e:
-                bot.send_message(chat_id, f"❌ Не удалось загрузить картинку по ссылке: {e}")
-                return
-        else:
-            # Если это ссылка на Tenor или медиа, пробуем скачать и обработать
-            try:
-                wm = bot.send_message(chat_id, f"{ce(E_SEND, '📤')} скачиваю файл по ссылке...", parse_mode="HTML")
-                path = download_from_url(text, suffix=".mp4" if "tenor.com" in text or "giphy.com" in text else ".mp3")
-                try: bot.delete_message(chat_id, wm.message_id)
-                except Exception: pass
-                
-                if "tenor.com" in text or "giphy.com" in text or path.endswith(tuple(VIDEO_EXTS)):
-                    path = extract_audio_from_video(path)
-                
-                reset_session(chat_id, uid)
-                u = get_session(chat_id, uid)
-                u["audio_path"] = path
-                u["fmt"] = ".mp3"
-                ask_title(chat_id, uid)
-                return
-            except Exception as e:
-                log.exception(e)
-                bot.send_message(chat_id, f"❌ Не удалось обработать ссылку: {e}")
-                return
-
     if is_group and step == "WAIT_AUDIO":
         track_user(msg.from_user)
         return
@@ -866,7 +831,7 @@ def handle_text(msg: types.Message):
         ask_cover(chat_id, uid)
     elif step == "WAIT_COVER":
         if not is_group:
-            bot.send_message(chat_id, f"{ce(E_COVER, '🖼️')} Отправьте картинку, гифку или прямую ссылку на изображение!", parse_mode="HTML")
+            bot.send_message(chat_id, f"{ce(E_COVER, '🖼️')} Отправьте картинку или гифку прямо сюда файлом!", parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda c: c.data in ("admin_panel", "admin_stats", "admin_users_list", "admin_import", "admin_broadcast", "admin_close"))
 def handle_admin_callbacks(call: types.CallbackQuery):
