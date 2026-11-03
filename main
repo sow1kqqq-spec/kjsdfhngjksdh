@@ -1,4 +1,4 @@
-import os, io, logging, tempfile, shutil, base64, time, json, subprocess
+import os, io, logging, tempfile, shutil, base64, time, json, subprocess, re
 from datetime import datetime
 import requests
 import telebot
@@ -73,16 +73,6 @@ def get_ffmpeg_cmd() -> str:
 def extract_audio_from_video(video_path: str) -> str:
     out_mp3 = video_path + "_extracted.mp3"
     ffmpeg_bin = get_ffmpeg_cmd()
-    
-    # Проверяем, есть ли вообще аудиопоток в видео
-    try:
-        probe_cmd = [ffmpeg_bin, "-i", video_path]
-        res_probe = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        if "Audio:" not in res_probe.stderr:
-            raise RuntimeError("В этом видеофайле отсутствует аудиодорожка!")
-    except Exception as e:
-        if "отсутствует" in str(e):
-            raise e
 
     try:
         cmd = [
@@ -95,6 +85,9 @@ def extract_audio_from_video(video_path: str) -> str:
             try: os.remove(video_path)
             except Exception: pass
             return out_mp3
+        else:
+            err_msg = res.stderr.decode("utf-8", errors="ignore")
+            log.warning(f"FFmpeg error: {err_msg}")
     except Exception as e:
         log.warning(f"ffmpeg extraction failed: {e}")
 
@@ -109,7 +102,7 @@ def extract_audio_from_video(video_path: str) -> str:
     except Exception as e:
         log.warning(f"pydub extraction failed: {e}")
 
-    raise RuntimeError("Не удалось извлечь звук (возможно, файл поврежден или не содержит аудио).")
+    raise RuntimeError("Не удалось извлечь звук. Убедитесь, что установлены FFmpeg и в видеофайле есть аудиодорожка.")
 
 def fetch_telegram_mau() -> int:
     try:
@@ -189,7 +182,6 @@ def get_stats_text() -> str:
     active_all = sum(1 for v in users_db.values() if not v.get("blocked", False))
     total_tracks = sum(v.get("tracks", 0) for v in users_db.values())
 
-    # Сокращенный и компактный вид статистики
     return (
         f"📊 <b>Статистика бота</b>\n\n"
         f"👥 Всего (за месяц): <b>{total_all}</b>\n"
