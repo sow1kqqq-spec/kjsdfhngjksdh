@@ -69,7 +69,7 @@ FMT_NAME: dict[str, str] = {
     ".aac": "AAC", ".ogg": "OGG", ".opus": "OPUS", ".flac": "FLAC",
     ".wav": "WAV", ".wma": "WMA", ".webm": "WebM",
 }
-VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm"}
+VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".gif"}
 
 def extract_audio_from_video(video_path: str) -> str:
     out_mp3 = video_path + "_extracted.mp3"
@@ -116,7 +116,7 @@ def extract_audio_from_video(video_path: str) -> str:
     except Exception as e:
         log.warning(f"system ffmpeg extraction failed: {e}")
 
-    raise RuntimeError("Не удалось извлечь звук из видеофайла.")
+    raise RuntimeError("Не удалось извлечь звук из файла.")
 
 def fetch_telegram_mau() -> int:
     try:
@@ -287,7 +287,7 @@ def detect_audio_ext(mime: str, filename: str = "") -> str | None:
         for k, v in AUDIO_MIME.items():
             if ml.startswith(k):
                 return v
-        if "video" in ml:
+        if "video" in ml or "image/gif" in ml:
             return ".mp4"
         if "audio" in ml:
             return ".mp3"
@@ -344,6 +344,14 @@ def download_file(file_id: str, suffix: str = ".mp3") -> str:
     info = bot.get_file(file_id)
     url  = f"https://api.telegram.org/file/bot{TOKEN}/{info.file_path}"
     r = requests.get(url, timeout=120)
+    r.raise_for_status()
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.write(r.content)
+    tmp.flush(); tmp.close()
+    return tmp.name
+
+def download_from_url(url: str, suffix: str = ".jpg") -> str:
+    r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
     r.raise_for_status()
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     tmp.write(r.content)
@@ -469,7 +477,7 @@ def ask_artist(chat_id: int, uid: int):
 
 def ask_cover(chat_id: int, uid: int):
     send_step(chat_id, uid,
-        f"{ce(E_COVER, '🖼️')} Пришли новую аватарку трека:",
+        f"{ce(E_COVER, '🖼️')} Пришли новую аватарку трека (можно ссылку или гифку/картинку):",
         markup=skip_kb(uid))
     get_session(chat_id, uid)["step"] = "WAIT_COVER"
 
@@ -548,7 +556,7 @@ def cmd_start(msg: types.Message):
     if not ensure_sub(msg.from_user, msg.chat):
         return
     bot.send_message(chat_id,
-        f"{ce(E_MUSIC, '🎵')} Пришли трек, чтобы изменить название, исполнителя или аватарку трека.",
+        f"{ce(E_MUSIC, '🎵')} Пришли трек или видео, чтобы изменить название, исполнителя или аватарку.",
         reply_markup=start_kb(uid, msg.chat.type), parse_mode="HTML")
 
 @bot.message_handler(commands=["reset"])
@@ -666,11 +674,12 @@ def _route_document(msg: types.Message):
     mime  = msg.document.mime_type or ""
     fname = msg.document.file_name or ""
 
-    if u["step"] == "WAIT_COVER" and mime.startswith("image/"):
+    if u["step"] == "WAIT_COVER":
         if not ensure_sub(msg.from_user, msg.chat):
             return
-        _save_cover_from_file_id(chat_id, uid, u, msg.document.file_id, msg.chat.type)
-        return
+        if mime.startswith("image/") or mime.startswith("video/") or "gif" in mime:
+            _save_cover_from_file_id(chat_id, uid, u, msg.document.file_id, msg.chat.type)
+            return
 
     ext = detect_audio_ext(mime, fname)
     if not ext:
@@ -683,7 +692,7 @@ def _route_document(msg: types.Message):
 
     if not ensure_sub(msg.from_user, msg.chat):
         return
-    is_vid = mime.startswith("video/") or ext in VIDEO_EXTS
+    is_vid = mime.startswith("video/") or ext in VIDEO_EXTS or "gif" in mime
     _handle_audio_file(chat_id, uid, u, msg.document.file_id, mime, fname, is_video=is_vid)
 
 def _save_cover_from_file_id(chat_id: int, uid: int, u: dict, file_id: str, chat_type: str = "private"):
@@ -701,10 +710,10 @@ def _handle_audio_file(chat_id: int, uid: int, u: dict, file_id: str, mime: str,
         bot.send_message(chat_id, "⚠️ Жду аватарку трека, не аудио/видео.")
         return
     ext = detect_audio_ext(mime, fname) or (".mp4" if is_video else ".mp3")
-    if ext in VIDEO_EXTS or mime.startswith("video/"):
+    if ext in VIDEO_EXTS or mime.startswith("video/") or "gif" in mime:
         is_video = True
 
-    wm = bot.send_message(chat_id, f"{ce(E_SEND, '📤')} {'вырезаю звук из видео...' if is_video else 'скачиваю трек...'}", parse_mode="HTML")
+    wm = bot.send_message(chat_id, f"{ce(E_SEND, '📤')} {'вырезаю звук из видео/гифки...' if is_video else 'скачиваю трек...'}", parse_mode="HTML")
     try:
         path = download_file(file_id, suffix=ext)
         if is_video:
@@ -750,6 +759,18 @@ def handle_video(msg: types.Message):
     u = get_session(chat_id, uid)
     _handle_audio_file(chat_id, uid, u, msg.video.file_id, msg.video.mime_type or "video/mp4", msg.video.file_name or "video.mp4", is_video=True)
 
+@bot.message_handler(content_types=["animation"])
+def handle_animation(msg: types.Message):
+    uid = msg.from_user.id
+    chat_id = msg.chat.id
+    if not ensure_sub(msg.from_user, msg.chat):
+        return
+    u = get_session(chat_id, uid)
+    if u["step"] == "WAIT_COVER":
+        _save_cover_from_file_id(chat_id, uid, u, msg.animation.file_id, msg.chat.type)
+        return
+    _handle_audio_file(chat_id, uid, u, msg.animation.file_id, msg.animation.mime_type or "video/mp4", msg.animation.file_name or "animation.mp4", is_video=True)
+
 @bot.message_handler(content_types=["video_note"])
 def handle_video_note(msg: types.Message):
     uid = msg.from_user.id
@@ -790,6 +811,42 @@ def handle_text(msg: types.Message):
     u = get_session(chat_id, uid)
     step = u.get("step")
 
+    # Проверка на то, прислал ли пользователь прямую ссылку (например, на картинку, гифку или медиафайл)
+    if text.startswith("http://") or text.startswith("https://"):
+        if not ensure_sub(msg.from_user, msg.chat):
+            return
+        if step == "WAIT_COVER":
+            try:
+                bot.delete_message(chat_id, msg.message_id)
+                path = download_from_url(text, suffix=".jpg")
+                u["cover_path"] = path
+                do_save(chat_id, uid, msg.chat.type)
+                return
+            except Exception as e:
+                bot.send_message(chat_id, f"❌ Не удалось загрузить картинку по ссылке: {e}")
+                return
+        else:
+            # Если это ссылка на Tenor или медиа, пробуем скачать и обработать
+            try:
+                wm = bot.send_message(chat_id, f"{ce(E_SEND, '📤')} скачиваю файл по ссылке...", parse_mode="HTML")
+                path = download_from_url(text, suffix=".mp4" if "tenor.com" in text or "giphy.com" in text else ".mp3")
+                try: bot.delete_message(chat_id, wm.message_id)
+                except Exception: pass
+                
+                if "tenor.com" in text or "giphy.com" in text or path.endswith(tuple(VIDEO_EXTS)):
+                    path = extract_audio_from_video(path)
+                
+                reset_session(chat_id, uid)
+                u = get_session(chat_id, uid)
+                u["audio_path"] = path
+                u["fmt"] = ".mp3"
+                ask_title(chat_id, uid)
+                return
+            except Exception as e:
+                log.exception(e)
+                bot.send_message(chat_id, f"❌ Не удалось обработать ссылку: {e}")
+                return
+
     if is_group and step == "WAIT_AUDIO":
         track_user(msg.from_user)
         return
@@ -809,7 +866,7 @@ def handle_text(msg: types.Message):
         ask_cover(chat_id, uid)
     elif step == "WAIT_COVER":
         if not is_group:
-            bot.send_message(chat_id, f"{ce(E_COVER, '🖼️')} Жду фото для аватарки!", parse_mode="HTML")
+            bot.send_message(chat_id, f"{ce(E_COVER, '🖼️')} Отправьте картинку, гифку или прямую ссылку на изображение!", parse_mode="HTML")
 
 @bot.callback_query_handler(func=lambda c: c.data in ("admin_panel", "admin_stats", "admin_users_list", "admin_import", "admin_broadcast", "admin_close"))
 def handle_admin_callbacks(call: types.CallbackQuery):
@@ -925,5 +982,5 @@ if __name__ == "__main__":
     bot.infinity_polling(
         timeout=60,
         long_polling_timeout=30,
-        allowed_updates=["message",]
+        allowed_updates=["message", "callback_query", "chat_member", "my_chat_member"]
     )
