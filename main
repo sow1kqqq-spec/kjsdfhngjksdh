@@ -25,7 +25,7 @@ from mutagen.oggopus import OggOpus
 from mutagen.asf import ASF
 from mutagen.wave import WAVE
 
-TOKEN        = "8831747632:AAHQBP07TKxs9jc9Nc8opT5cQqTcurfgeCA"
+TOKEN        = "8983080155:AAFiQSvuHDLtJCgW21nkZvq3iCZYOS4Dsko"
 CHANNEL_ID   = -1004218500440
 CHANNEL_URL  = "https://t.me/vk_only_News"
 BOT_USERNAME = "vksoundseditorbot"
