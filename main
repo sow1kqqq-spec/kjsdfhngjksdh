@@ -9,7 +9,7 @@ def install_deps():
 
 install_deps()
 
-import os, io, logging, tempfile, shutil, base64, time, json, re
+import os, io, logging, tempfile, shutil, base64, time, json, re, threading
 from datetime import datetime
 import requests
 import telebot
@@ -31,6 +31,9 @@ CHANNEL_URL  = "https://t.me/vk_only_News"
 BOT_USERNAME = "vksoundseditorbot"
 ADMIN_IDS    = {6668784806}
 DB_FILE      = "users_db.json"
+
+SESSION_TTL_SEC = 1800      # сессия протухает и чистится через 30 мин простоя
+SWEEP_INTERVAL_SEC = 300    # свип раз в 5 мин
 
 bot = telebot.TeleBot(TOKEN, parse_mode="HTML")
 
@@ -73,7 +76,7 @@ VIDEO_EXTS = {".mp4", ".mov", ".mkv", ".avi", ".webm", ".gif"}
 
 def extract_audio_from_video(video_path: str) -> str:
     out_mp3 = video_path + "_extracted.mp3"
-    
+
     try:
         from moviepy.editor import VideoFileClip
         clip = VideoFileClip(video_path)
@@ -294,6 +297,7 @@ def detect_audio_ext(mime: str, filename: str = "") -> str | None:
     return None
 
 sessions: dict[tuple[int, int], dict] = {}
+sessions_lock = threading.Lock()
 
 def _blank() -> dict:
     return {
@@ -304,16 +308,46 @@ def _blank() -> dict:
         "artist":      None,
         "cover_path":  None,
         "last_msg_id": None,
+        "_ts":         time.time(),   # для TTL-свипа брошенных сессий
     }
 
 def get_session(chat_id: int, uid: int) -> dict:
     key = (chat_id, uid)
-    if key not in sessions:
-        sessions[key] = _blank()
-    return sessions[key]
+    with sessions_lock:
+        if key not in sessions:
+            sessions[key] = _blank()
+        sessions[key]["_ts"] = time.time()
+        return sessions[key]
 
 def reset_session(chat_id: int, uid: int):
-    sessions[(chat_id, uid)] = _blank()
+    with sessions_lock:
+        sessions[(chat_id, uid)] = _blank()
+
+def _cleanup_session_files(u: dict):
+    for p in (u.get("audio_path"), u.get("cover_path")):
+        if p and os.path.exists(p):
+            try: os.remove(p)
+            except Exception as e: log.warning(f"sweep: failed to remove {p}: {e}")
+
+def sweep_stale_sessions(max_age_sec: int = SESSION_TTL_SEC):
+    now = time.time()
+    with sessions_lock:
+        stale_keys = [k for k, u in sessions.items() if now - u.get("_ts", now) > max_age_sec]
+        for k in stale_keys:
+            _cleanup_session_files(sessions[k])
+            del sessions[k]
+    if stale_keys:
+        log.info(f"sweep: removed {len(stale_keys)} stale session(s)")
+
+def _sweep_loop():
+    while True:
+        time.sleep(SWEEP_INTERVAL_SEC)
+        try:
+            sweep_stale_sessions()
+        except Exception as e:
+            log.warning(f"sweep loop failed: {e}")
+
+threading.Thread(target=_sweep_loop, daemon=True).start()
 
 def delete_last(chat_id: int, uid: int):
     u   = get_session(chat_id, uid)
